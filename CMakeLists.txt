@@ -21,6 +21,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(realtime_tools REQUIRED)
+find_package(transmission_interface REQUIRED)
 
 find_package(dynamixel_sdk REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -46,6 +47,7 @@ target_include_directories(
   ${hardware_interface_INCLUDE_DIRS}
   ${realtime_tools_INCLUDE_DIRS}
   ${rclcpp_lifecycle_INCLUDE_DIRS}
+  ${transmission_interface_INCLUDE_DIRS}
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -58,6 +60,7 @@ target_link_libraries(${PROJECT_NAME}
   ${std_srvs_TARGETS}
   ${dynamixel_interfaces_TARGETS}
   ${realtime_tools_TARGETS}
+  ${transmission_interface_TARGETS}
 )
 
 pluginlib_export_plugin_description_file(hardware_interface dynamixel_hardware_interface_plugin.xml)
@@ -108,6 +111,7 @@ ament_export_dependencies(
   pluginlib
   dynamixel_sdk
   dynamixel_interfaces
+  transmission_interface
 )
 
 ament_package()

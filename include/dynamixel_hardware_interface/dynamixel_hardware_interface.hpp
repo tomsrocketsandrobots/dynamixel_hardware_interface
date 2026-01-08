@@ -33,6 +33,10 @@
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
+#include "pluginlib/class_loader.hpp"
+#include "transmission_interface/handle.hpp"
+#include "transmission_interface/transmission.hpp"
+#include "transmission_interface/transmission_loader.hpp"
 
 #include "dynamixel_hardware_interface/visibility_control.h"
 #include "dynamixel_hardware_interface/dynamixel/dynamixel.hpp"
@@ -311,6 +315,22 @@ private:
    */
   void ChangeDxlTorqueState();
 
+  // Transmission loader helpers
+  bool load_transmissions_from_urdf();
+  bool build_transmission_handles(
+    const hardware_interface::TransmissionInfo & info,
+    bool for_state,
+    std::vector<transmission_interface::JointHandle> & joint_handles,
+    std::vector<transmission_interface::ActuatorHandle> & actuator_handles) const;
+
+  void apply_revolute_to_prismatic_state();
+  void apply_prismatic_to_revolute_command();
+
+  std::shared_ptr<double> find_value_ptr(
+    const std::string & name,
+    const std::vector<std::string> & candidate_interfaces,
+    const std::vector<HandlerVarType> & handlers) const;
+
   using DynamixelStateMsg = dynamixel_interfaces::msg::DynamixelState;
   using StatePublisher = realtime_tools::RealtimePublisher<DynamixelStateMsg>;
   rclcpp::Publisher<DynamixelStateMsg>::SharedPtr dxl_state_pub_;
@@ -374,6 +394,17 @@ private:
 
   // Move dxl_comm_ to the end for safe destruction order
   std::shared_ptr<Dynamixel> dxl_comm_;
+
+  // Transmission loader + storage
+  std::unique_ptr<pluginlib::ClassLoader<transmission_interface::TransmissionLoader>>
+    transmission_loader_;
+  bool transmissions_loaded_{false};
+  std::vector<std::shared_ptr<transmission_interface::Transmission>> state_transmissions_;
+  std::vector<std::shared_ptr<transmission_interface::Transmission>> command_transmissions_;
+  std::vector<std::vector<transmission_interface::ActuatorHandle>> state_actuator_handles_;
+  std::vector<std::vector<transmission_interface::JointHandle>> state_joint_handles_;
+  std::vector<std::vector<transmission_interface::ActuatorHandle>> command_actuator_handles_;
+  std::vector<std::vector<transmission_interface::JointHandle>> command_joint_handles_;
 };
 
 // Conversion maps between ROS2 and Dynamixel interface names
