@@ -21,6 +21,7 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <cmath>
 #include <thread>
 #include <chrono>
 
@@ -2083,6 +2084,22 @@ DxlError Dynamixel::SetDxlValueToSyncWrite()
           comm_id, ID, item_name, data, size,
           is_signed);
         WriteValueToBuffer(param_write_value, added_byte, raw_value, size);
+
+        // if (item_name == "Goal Velocity") {
+        //   static auto last_sync_vel_log = std::chrono::steady_clock::now();
+        //   const auto now = std::chrono::steady_clock::now();
+        //   if ((now - last_sync_vel_log) > std::chrono::milliseconds(500)) {
+        //     fprintf(
+        //       stderr,
+        //       "[GoalVel][sync][comm_id:%03u id:%03u] cmd %.4f -> raw %u (size %u)\n",
+        //       comm_id,
+        //       ID,
+        //       data,
+        //       raw_value,
+        //       size);
+        //     last_sync_vel_log = now;
+        //   }
+        // }
       } else {
         // Fallback to existing logic for compatibility
         if (item_name == "Goal Position") {
@@ -2288,6 +2305,22 @@ DxlError Dynamixel::SetDxlValueToBulkWrite()
             comm_id, ID, item_name, data, size,
             is_signed);
           WriteValueToBuffer(param_write_value, added_byte, raw_value, size);
+
+          // if (item_name == "Goal Velocity") {
+          //   static auto last_bulk_vel_log = std::chrono::steady_clock::now();
+          //   const auto now = std::chrono::steady_clock::now();
+          //   if ((now - last_bulk_vel_log) > std::chrono::milliseconds(500)) {
+          //     fprintf(
+          //       stderr,
+          //       "[GoalVel][bulk-direct][comm_id:%03u id:%03u] cmd %.4f -> raw %u (size %u)\n",
+          //       comm_id,
+          //       ID,
+          //       data,
+          //       raw_value,
+          //       size);
+          //     last_bulk_vel_log = now;
+          //   }
+          // }
         } else {
           // Fallback to existing logic for compatibility
           if (item_name == "Goal Position") {
@@ -2332,6 +2365,22 @@ DxlError Dynamixel::SetDxlValueToBulkWrite()
             comm_id, ID, item_name, data, size,
             is_signed);
           WriteValueToBuffer(param_write_value, added_byte, raw_value, size);
+
+          // if (item_name == "Goal Velocity") {
+          //   static auto last_bulk_indirect_vel_log = std::chrono::steady_clock::now();
+          //   const auto now = std::chrono::steady_clock::now();
+          //   if ((now - last_bulk_indirect_vel_log) > std::chrono::milliseconds(500)) {
+          //     fprintf(
+          //       stderr,
+          //       "[GoalVel][bulk-indirect][comm_id:%03u id:%03u] cmd %.4f -> raw %u (size %u)\n",
+          //       comm_id,
+          //       ID,
+          //       data,
+          //       raw_value,
+          //       size);
+          //     last_bulk_indirect_vel_log = now;
+          //   }
+          // }
         } else {
           // Fallback to existing logic for compatibility
           if (item_name == "Goal Position") {

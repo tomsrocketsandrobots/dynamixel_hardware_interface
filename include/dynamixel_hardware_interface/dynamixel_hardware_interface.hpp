@@ -260,7 +260,7 @@ private:
 
   // joint <-> transmission matrix
   size_t num_of_joints_;
-  size_t num_of_transmissions_;
+  size_t num_of_transmissions_{0};
   std::vector<std::vector<double>> transmission_to_joint_matrix_;
   std::vector<std::vector<double>> joint_to_transmission_matrix_;
 

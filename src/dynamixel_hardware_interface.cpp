@@ -38,7 +38,7 @@ DynamixelHardware::DynamixelHardware()
   logger_(rclcpp::get_logger("dynamixel_hardware_interface"))
 {
   dxl_status_ = DXL_OK;
-  dxl_torque_status_ = TORQUE_ENABLED;
+  dxl_torque_status_ = TORQUE_DISABLED;  // start pessimistic; will enable explicitly
   err_timeout_ms_ = 500;
   is_read_in_error_ = false;
   is_write_in_error_ = false;
@@ -81,28 +81,16 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  transmissions_loaded_ = load_transmissions_from_urdf();
-
-  if (!transmissions_loaded_) {
-    if (info_.hardware_parameters.find("number_of_transmissions") ==
-      info_.hardware_parameters.end())
-    {
-      RCLCPP_ERROR_STREAM(
-        logger_,
-        "Required parameter 'number_of_transmissions' not found in hardware parameters");
-      return hardware_interface::CallbackReturn::ERROR;
-    }
-
-    num_of_transmissions_ =
-      static_cast<size_t>(stoi(info_.hardware_parameters["number_of_transmissions"]));
-
-    if (!SetMatrix()) {
-      RCLCPP_ERROR_STREAM(logger_, "Failed to set transmission matrices");
-      return hardware_interface::CallbackReturn::ERROR;
-    }
+  if (info_.transmissions.empty()) {
+    RCLCPP_WARN(logger_, "RobotHWInfo provided no transmissions for this hardware component");
   } else {
-    num_of_transmissions_ = info_.transmissions.size();
-    RCLCPP_INFO_STREAM(logger_, "Loaded " << num_of_transmissions_ << " transmission(s) from URDF");
+    std::ostringstream oss;
+    oss << "RobotHWInfo has " << info_.transmissions.size() << " transmission(s): ";
+    for (size_t i = 0; i < info_.transmissions.size(); ++i) {
+      oss << info_.transmissions[i].name << " (" << info_.transmissions[i].type << ")";
+      if (i + 1 < info_.transmissions.size()) {oss << ", ";}
+    }
+    RCLCPP_INFO_STREAM(logger_, oss.str());
   }
 
   if (info_.hardware_parameters.find("port_name") == info_.hardware_parameters.end()) {
@@ -288,17 +276,6 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  if (!transmissions_loaded_) {
-    if (num_of_transmissions_ != hdl_trans_commands_.size() &&
-      num_of_transmissions_ != hdl_trans_states_.size())
-    {
-      RCLCPP_ERROR_STREAM(
-        logger_, "Error: number of transmission " << num_of_transmissions_ << ", " <<
-          hdl_trans_commands_.size() << ", " << hdl_trans_states_.size());
-      return hardware_interface::CallbackReturn::ERROR;
-    }
-  }
-
   dxl_status_ = DXL_OK;
 
   hdl_joint_states_.clear();
@@ -352,6 +329,43 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
       logger_, "Error: number of joints " << num_of_joints_ << ", " <<
         hdl_joint_commands_.size() << ", " << hdl_joint_commands_.size());
     return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  // Load transmission plugins now that joint/actuator handles are populated.
+  transmissions_loaded_ = load_transmissions_from_urdf();
+
+  if (!transmissions_loaded_) {
+    if (info_.hardware_parameters.find("number_of_transmissions") ==
+      info_.hardware_parameters.end())
+    {
+      RCLCPP_ERROR_STREAM(
+        logger_,
+        "Required parameter 'number_of_transmissions' not found in hardware parameters");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+
+    num_of_transmissions_ =
+      static_cast<size_t>(stoi(info_.hardware_parameters["number_of_transmissions"]));
+
+    if (!SetMatrix()) {
+      RCLCPP_ERROR_STREAM(logger_, "Failed to set transmission matrices");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+  } else {
+    num_of_transmissions_ = info_.transmissions.size();
+    RCLCPP_INFO_STREAM(logger_, "Loaded " << num_of_transmissions_ << " transmission(s) from URDF");
+  }
+
+  // Validate handle counts against transmission count to catch configuration errors early.
+  if (!transmissions_loaded_) {
+    if (num_of_transmissions_ != hdl_trans_commands_.size() ||
+      num_of_transmissions_ != hdl_trans_states_.size())
+    {
+      RCLCPP_ERROR_STREAM(
+        logger_, "Error: number of transmissions (" << num_of_transmissions_ << ") does not match DXL handle sets (cmd " <<
+          hdl_trans_commands_.size() << ", state " << hdl_trans_states_.size() << ")");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
   }
 
   hdl_sensor_states_.clear();
@@ -728,11 +742,39 @@ hardware_interface::return_type DynamixelHardware::write(
 
     ChangeDxlTorqueState();
 
+    for (const auto & joint_cmd : hdl_joint_commands_) {
+      for (size_t idx = 0; idx < joint_cmd.interface_name_vec.size(); ++idx) {
+        if (joint_cmd.interface_name_vec.at(idx) == hardware_interface::HW_IF_VELOCITY) {
+          const double v = *joint_cmd.value_ptr_vec.at(idx);
+          if (std::abs(v) > 1e-6) {
+            RCLCPP_INFO_STREAM_THROTTLE(
+              logger_, clock_, 500,
+              "Joint cmd " << joint_cmd.name << " / " << joint_cmd.interface_name_vec.at(idx)
+                << " = " << v);
+          }
+        }
+      }
+    }
+
     if (transmissions_loaded_) {
       try {
         apply_prismatic_to_revolute_command();
         for (auto & tx : command_transmissions_) {
           if (tx) {tx->joint_to_actuator();}
+        }
+
+        // Debug: surface actuator command values after transmission mapping
+        // so we can confirm non-zero Goal Velocity is being produced.
+        for (const auto & cmd : hdl_trans_commands_) {
+          for (size_t idx = 0; idx < cmd.interface_name_vec.size(); ++idx) {
+            const double v = *cmd.value_ptr_vec.at(idx);
+            if (std::abs(v) > 1e-6) {
+              RCLCPP_INFO_STREAM_THROTTLE(
+                logger_, clock_, 500,
+                "Actuator cmd " << cmd.name << " / " << cmd.interface_name_vec.at(idx)
+                  << " = " << v);
+            }
+          }
         }
       } catch (const std::exception & e) {
         RCLCPP_ERROR_STREAM(logger_, "Transmission command propagation failed: " << e.what());
@@ -991,6 +1033,13 @@ bool DynamixelHardware::InitItem(const hardware_interface::ComponentInfo & gpio)
           static_cast<uint32_t>(stoi(param.second))) != DxlError::OK)
       {
         return false;
+      }
+      uint32_t mode_readback = 0;
+      if (dxl_comm_->ReadItem(comm_id, id, param_name, mode_readback) == DxlError::OK) {
+        RCLCPP_INFO_STREAM(
+          logger_,
+          "[InitItem][comm_id:" << std::to_string(comm_id) << "][ID:" << std::to_string(id) <<
+            "] Operating Mode readback = " << mode_readback);
       }
     }
   }
@@ -1526,13 +1575,18 @@ void DynamixelHardware::ChangeDxlTorqueState()
 
   // Aggregate across all devices; if any OFF, report DISABLED
   auto torque_state_map = dxl_comm_->GetDxlTorqueState();
+  // Cache per-device torque state for publishers
+  dxl_torque_state_.clear();
+  bool any_off = false;
   for (const auto & single_torque_state : torque_state_map) {
+    dxl_torque_state_[{single_torque_state.first.first, single_torque_state.first.second}] =
+      (single_torque_state.second == TORQUE_ON);
     if (single_torque_state.second == TORQUE_OFF) {
-      dxl_torque_status_ = TORQUE_DISABLED;
-      return;
+      any_off = true;
     }
   }
-  dxl_torque_status_ = TORQUE_ENABLED;
+
+  dxl_torque_status_ = any_off ? TORQUE_DISABLED : TORQUE_ENABLED;
 }
 
 std::shared_ptr<double> DynamixelHardware::find_value_ptr(
@@ -1569,46 +1623,55 @@ bool DynamixelHardware::build_transmission_handles(
 
   for (const auto & joint : info.joints) {
     const auto & iface_list = for_state ? joint.state_interfaces : joint.command_interfaces;
-    const std::string iface_name = iface_list.empty() ? hardware_interface::HW_IF_POSITION : iface_list.front();
-    std::vector<std::string> candidate{iface_name};
-    auto ptr = find_value_ptr(joint.name, candidate, joint_source);
-    if (!ptr) {
-      RCLCPP_ERROR_STREAM(logger_, "Could not find joint interface '" << iface_name << "' for joint '" << joint.name << "'");
-      return false;
+    const std::vector<std::string> requested = iface_list.empty()
+      ? std::vector<std::string>{hardware_interface::HW_IF_POSITION}
+      : iface_list;
+
+    for (const auto & iface_name : requested) {
+      std::vector<std::string> candidate{iface_name};
+      auto ptr = find_value_ptr(joint.name, candidate, joint_source);
+      if (!ptr) {
+        RCLCPP_ERROR_STREAM(logger_, "Could not find joint interface '" << iface_name << "' for joint '" << joint.name << "'");
+        return false;
+      }
+      joint_handles.emplace_back(joint.name, iface_name, ptr.get());
     }
-    joint_handles.emplace_back(joint.name, iface_name, ptr.get());
   }
 
   for (const auto & actuator : info.actuators) {
     const auto & iface_list = for_state ? actuator.state_interfaces : actuator.command_interfaces;
-    const std::string ros_iface = iface_list.empty() ? hardware_interface::HW_IF_POSITION : iface_list.front();
+    const std::vector<std::string> requested = iface_list.empty()
+      ? std::vector<std::string>{hardware_interface::HW_IF_POSITION}
+      : iface_list;
 
-    std::vector<std::string> candidates{ros_iface};
-    if (for_state) {
-      auto map_it = dynamixel_hardware_interface::ros2_to_dxl_state_map.find(ros_iface);
-      if (map_it != dynamixel_hardware_interface::ros2_to_dxl_state_map.end()) {
-        candidates = map_it->second;
+    for (const auto & ros_iface : requested) {
+      std::vector<std::string> candidates{ros_iface};
+      if (for_state) {
+        auto map_it = dynamixel_hardware_interface::ros2_to_dxl_state_map.find(ros_iface);
+        if (map_it != dynamixel_hardware_interface::ros2_to_dxl_state_map.end()) {
+          candidates = map_it->second;
+        }
+      } else {
+        auto map_it = dynamixel_hardware_interface::ros2_to_dxl_cmd_map.find(ros_iface);
+        if (map_it != dynamixel_hardware_interface::ros2_to_dxl_cmd_map.end()) {
+          candidates = map_it->second;
+        }
       }
-    } else {
-      auto map_it = dynamixel_hardware_interface::ros2_to_dxl_cmd_map.find(ros_iface);
-      if (map_it != dynamixel_hardware_interface::ros2_to_dxl_cmd_map.end()) {
-        candidates = map_it->second;
-      }
-    }
 
-    auto ptr = find_value_ptr(actuator.name, candidates, actuator_source);
-    if (!ptr) {
-      std::ostringstream oss;
-      oss << "Could not find actuator interface for '" << actuator.name << "' (searched: ";
-      for (size_t i = 0; i < candidates.size(); ++i) {
-        oss << candidates[i];
-        if (i + 1 < candidates.size()) {oss << ", ";}
+      auto ptr = find_value_ptr(actuator.name, candidates, actuator_source);
+      if (!ptr) {
+        std::ostringstream oss;
+        oss << "Could not find actuator interface for '" << actuator.name << "' (searched: ";
+        for (size_t i = 0; i < candidates.size(); ++i) {
+          oss << candidates[i];
+          if (i + 1 < candidates.size()) {oss << ", ";}
+        }
+        oss << ")";
+        RCLCPP_ERROR_STREAM(logger_, oss.str());
+        return false;
       }
-      oss << ")";
-      RCLCPP_ERROR_STREAM(logger_, oss.str());
-      return false;
+      actuator_handles.emplace_back(actuator.name, ros_iface, ptr.get());
     }
-    actuator_handles.emplace_back(actuator.name, ros_iface, ptr.get());
   }
 
   return true;
@@ -1624,6 +1687,7 @@ bool DynamixelHardware::load_transmissions_from_urdf()
   command_joint_handles_.clear();
 
   if (info_.transmissions.empty()) {
+    RCLCPP_WARN(logger_, "No transmissions in hardware info; falling back to matrix mapping");
     return false;
   }
 
@@ -1635,6 +1699,9 @@ bool DynamixelHardware::load_transmissions_from_urdf()
       RCLCPP_ERROR_STREAM(logger_, "Failed to instantiate transmission loader for '" << tx_info.type << "': " << e.what());
       return false;
     }
+
+    RCLCPP_INFO_STREAM(
+      logger_, "Loading transmission '" << tx_info.name << "' of type '" << tx_info.type << "'");
 
     auto tx_state = loader_inst->load(tx_info);
     auto tx_command = loader_inst->load(tx_info);
@@ -1663,6 +1730,11 @@ bool DynamixelHardware::load_transmissions_from_urdf()
       return false;
     }
 
+    RCLCPP_INFO_STREAM(
+      logger_, "Configured transmission '" << tx_info.name << "' with "
+      << joint_command_handles.size() << " joint cmd handles and "
+      << actuator_command_handles.size() << " actuator cmd handles");
+
     state_joint_handles_.push_back(joint_state_handles);
     state_actuator_handles_.push_back(actuator_state_handles);
     command_joint_handles_.push_back(joint_command_handles);
@@ -1671,6 +1743,8 @@ bool DynamixelHardware::load_transmissions_from_urdf()
     state_transmissions_.push_back(tx_state);
     command_transmissions_.push_back(tx_command);
   }
+
+  RCLCPP_INFO_STREAM(logger_, "Successfully loaded " << command_transmissions_.size() << " transmission(s) from URDF");
 
   return true;
 }
@@ -1777,13 +1851,25 @@ void DynamixelHardware::set_dxl_torque_srv_callback(
 {
   if (request->data) {
     if (dxl_torque_status_ == TORQUE_ENABLED) {
-      response->success = true;
-      response->message = "Already enabled.";
-      RCLCPP_INFO_STREAM(logger_, "Requested to enable torque, but already enabled.");
-      return;
-    } else {
-      dxl_torque_status_ = REQUESTED_TO_ENABLE;
+      // Even if we think torque is enabled, re-check the devices and re-enable if any are off.
+      auto torque_state_map = dxl_comm_->GetDxlTorqueState();
+      bool any_off = false;
+      for (const auto & single_state : torque_state_map) {
+        if (single_state.second == TORQUE_OFF) {
+          any_off = true;
+          break;
+        }
+      }
+
+      if (!any_off) {
+        response->success = true;
+        response->message = "Already enabled.";
+        RCLCPP_INFO_STREAM(logger_, "Requested to enable torque, but already enabled.");
+        return;
+      }
     }
+
+    dxl_torque_status_ = REQUESTED_TO_ENABLE;
   } else {
     if (dxl_torque_status_ == TORQUE_DISABLED) {
       response->success = true;
