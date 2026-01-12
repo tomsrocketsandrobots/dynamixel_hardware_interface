@@ -395,6 +395,27 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
   dxl_state_msg_.dxl_hw_state.resize(num_of_pub_data);
   dxl_state_msg_.torque_state.resize(num_of_pub_data);
 
+  size_t num_of_command_entries = 0;
+  for (const auto & cmd : hdl_trans_commands_) {
+    num_of_command_entries += cmd.interface_name_vec.size();
+  }
+  command_msg_capacity_ = num_of_command_entries;
+  dxl_command_msg_.id.resize(command_msg_capacity_);
+  dxl_command_msg_.comm_id.resize(command_msg_capacity_);
+  dxl_command_msg_.name.resize(command_msg_capacity_);
+  dxl_command_msg_.interface.resize(command_msg_capacity_);
+  dxl_command_msg_.value.resize(command_msg_capacity_);
+
+  std::string str_dxl_command_pub_name = "dynamixel_hardware_interface/dxl_command";
+  if (info_.hardware_parameters.find("dynamixel_command_pub_msg_name") !=
+    info_.hardware_parameters.end())
+  {
+    str_dxl_command_pub_name = info_.hardware_parameters["dynamixel_command_pub_msg_name"];
+  }
+  dxl_command_pub_ = this->create_publisher<DynamixelCommandMsg>(
+    str_dxl_command_pub_name, rclcpp::SystemDefaultsQoS());
+  dxl_command_pub_uni_ptr_ = std::make_unique<CommandPublisher>(dxl_command_pub_);
+
   using namespace std::placeholders;
 
   // Get Dynamixel data service
@@ -747,7 +768,7 @@ hardware_interface::return_type DynamixelHardware::write(
         if (joint_cmd.interface_name_vec.at(idx) == hardware_interface::HW_IF_VELOCITY) {
           const double v = *joint_cmd.value_ptr_vec.at(idx);
           if (std::abs(v) > 1e-6) {
-            RCLCPP_INFO_STREAM_THROTTLE(
+            RCLCPP_DEBUG_STREAM_THROTTLE(
               logger_, clock_, 500,
               "Joint cmd " << joint_cmd.name << " / " << joint_cmd.interface_name_vec.at(idx)
                 << " = " << v);
@@ -769,7 +790,7 @@ hardware_interface::return_type DynamixelHardware::write(
           for (size_t idx = 0; idx < cmd.interface_name_vec.size(); ++idx) {
             const double v = *cmd.value_ptr_vec.at(idx);
             if (std::abs(v) > 1e-6) {
-              RCLCPP_INFO_STREAM_THROTTLE(
+              RCLCPP_DEBUG_STREAM_THROTTLE(
                 logger_, clock_, 500,
                 "Actuator cmd " << cmd.name << " / " << cmd.interface_name_vec.at(idx)
                   << " = " << v);
@@ -783,6 +804,47 @@ hardware_interface::return_type DynamixelHardware::write(
     } else {
       apply_prismatic_to_revolute_command();
       CalcJointToTransmission();
+    }
+
+    if (dxl_command_pub_uni_ptr_ && command_msg_capacity_ > 0U) {
+      if (dxl_command_msg_.id.size() != command_msg_capacity_) {
+        dxl_command_msg_.id.resize(command_msg_capacity_);
+        dxl_command_msg_.comm_id.resize(command_msg_capacity_);
+        dxl_command_msg_.name.resize(command_msg_capacity_);
+        dxl_command_msg_.interface.resize(command_msg_capacity_);
+        dxl_command_msg_.value.resize(command_msg_capacity_);
+      }
+
+      size_t slot = 0;
+      dxl_command_msg_.header.stamp = this->now();
+      for (const auto & cmd : hdl_trans_commands_) {
+        for (size_t idx = 0; idx < cmd.interface_name_vec.size(); ++idx) {
+          if (slot >= dxl_command_msg_.id.size()) {
+            break;
+          }
+          dxl_command_msg_.id.at(slot) = cmd.id;
+          dxl_command_msg_.comm_id.at(slot) = cmd.comm_id;
+          dxl_command_msg_.name.at(slot) = cmd.name;
+          dxl_command_msg_.interface.at(slot) = cmd.interface_name_vec.at(idx);
+          const double unit_value = *cmd.value_ptr_vec.at(idx);
+          dxl_command_msg_.value.at(slot) = convert_unit_to_raw_count(
+            cmd.comm_id,
+            cmd.id,
+            cmd.interface_name_vec.at(idx),
+            unit_value);
+          ++slot;
+        }
+      }
+
+      if (slot != dxl_command_msg_.id.size()) {
+        dxl_command_msg_.id.resize(slot);
+        dxl_command_msg_.comm_id.resize(slot);
+        dxl_command_msg_.name.resize(slot);
+        dxl_command_msg_.interface.resize(slot);
+        dxl_command_msg_.value.resize(slot);
+      }
+
+      dxl_command_pub_uni_ptr_->try_publish(dxl_command_msg_);
     }
 
     dxl_comm_->WriteMultiDxlData();
@@ -1306,6 +1368,69 @@ void DynamixelHardware::ReadSensorData(const HandlerVarType & sensor)
       }
     }
   }
+}
+
+int32_t DynamixelHardware::convert_unit_to_raw_count(
+  uint8_t comm_id,
+  uint8_t id,
+  const std::string & interface_name,
+  double unit_value) const
+{
+  if (!dxl_comm_) {
+    return static_cast<int32_t>(std::llround(unit_value));
+  }
+
+  auto dxl_info = dxl_comm_->GetDxlInfo();
+  uint16_t address = 0;
+  uint8_t size = 0;
+  if (!dxl_info.GetDxlControlItem(comm_id, id, interface_name, address, size)) {
+    return static_cast<int32_t>(std::llround(unit_value));
+  }
+
+  bool is_signed = false;
+  (void) dxl_info.GetDxlSignType(comm_id, id, interface_name, is_signed);
+
+  double unit_placeholder = 0.0;
+  const bool has_unit_info =
+    dxl_info.GetDxlUnitValue(comm_id, id, interface_name, unit_placeholder);
+
+  auto round_double = [](double value) -> int32_t
+  {
+    return static_cast<int32_t>(std::llround(value));
+  };
+
+  if (has_unit_info) {
+    switch (size) {
+      case 1:
+        if (is_signed) {
+          return static_cast<int32_t>(
+            dxl_info.ConvertUnitToValue<int8_t>(comm_id, id, interface_name, unit_value));
+        }
+        return static_cast<int32_t>(
+          dxl_info.ConvertUnitToValue<uint8_t>(comm_id, id, interface_name, unit_value));
+      case 2:
+        if (is_signed) {
+          return static_cast<int32_t>(
+            dxl_info.ConvertUnitToValue<int16_t>(comm_id, id, interface_name, unit_value));
+        }
+        return static_cast<int32_t>(
+          dxl_info.ConvertUnitToValue<uint16_t>(comm_id, id, interface_name, unit_value));
+      case 4:
+        if (is_signed) {
+          return dxl_info.ConvertUnitToValue<int32_t>(comm_id, id, interface_name, unit_value);
+        }
+        return static_cast<int32_t>(
+          dxl_info.ConvertUnitToValue<uint32_t>(comm_id, id, interface_name, unit_value));
+      default:
+        return round_double(unit_value);
+    }
+  }
+
+  if (interface_name == "Goal Position") {
+    return static_cast<int32_t>(dxl_info.ConvertRadianToValue(comm_id, id, unit_value));
+  }
+
+  return round_double(unit_value);
 }
 
 bool DynamixelHardware::SetMatrix()

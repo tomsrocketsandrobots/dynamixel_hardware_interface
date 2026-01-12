@@ -17,6 +17,7 @@
 #ifndef DYNAMIXEL_HARDWARE_INTERFACE__DYNAMIXEL_HARDWARE_INTERFACE_HPP_
 #define DYNAMIXEL_HARDWARE_INTERFACE__DYNAMIXEL_HARDWARE_INTERFACE_HPP_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -40,6 +41,7 @@
 
 #include "dynamixel_hardware_interface/visibility_control.h"
 #include "dynamixel_hardware_interface/dynamixel/dynamixel.hpp"
+#include "dynamixel_hardware_interface/msg/dynamixel_command.hpp"
 
 #include "dynamixel_interfaces/msg/dynamixel_state.hpp"
 #include "dynamixel_interfaces/srv/get_data_from_dxl.hpp"
@@ -336,6 +338,19 @@ private:
   rclcpp::Publisher<DynamixelStateMsg>::SharedPtr dxl_state_pub_;
   std::unique_ptr<StatePublisher> dxl_state_pub_uni_ptr_;
   DynamixelStateMsg dxl_state_msg_;
+
+  using DynamixelCommandMsg = dynamixel_hardware_interface::msg::DynamixelCommand;
+  using CommandPublisher = realtime_tools::RealtimePublisher<DynamixelCommandMsg>;
+  rclcpp::Publisher<DynamixelCommandMsg>::SharedPtr dxl_command_pub_;
+  std::unique_ptr<CommandPublisher> dxl_command_pub_uni_ptr_;
+  DynamixelCommandMsg dxl_command_msg_;
+  size_t command_msg_capacity_{0U};
+
+  int32_t convert_unit_to_raw_count(
+    uint8_t comm_id,
+    uint8_t id,
+    const std::string & interface_name,
+    double unit_value) const;
 
   rclcpp::Service<dynamixel_interfaces::srv::GetDataFromDxl>::SharedPtr get_dxl_data_srv_;
   void get_dxl_data_srv_callback(

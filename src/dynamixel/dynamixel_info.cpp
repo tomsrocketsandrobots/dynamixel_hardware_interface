@@ -46,7 +46,7 @@ void DynamixelInfo::InitDxlModelInfo()
     std::string file_name;
     open_file >> model_number >> file_name;
     if (open_file.good()) {
-      fprintf(stderr, "num: %d, name: %s\n", model_number, file_name.c_str());
+      // fprintf(stderr, "num: %d, name: %s\n", model_number, file_name.c_str());
       dxl_model_list_.insert(std::make_pair(model_number, file_name));
     }
   }

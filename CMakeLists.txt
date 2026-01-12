@@ -22,6 +22,8 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(realtime_tools REQUIRED)
 find_package(transmission_interface REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 
 find_package(dynamixel_sdk REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -30,18 +32,26 @@ find_package(dynamixel_interfaces REQUIRED)
 ################################################################################
 # Build
 ################################################################################
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/DynamixelCommand.msg"
+  DEPENDENCIES std_msgs
+)
+
 add_library(
-  ${PROJECT_NAME}
+  ${PROJECT_NAME}_lib
   SHARED
   src/dynamixel_hardware_interface.cpp
   src/dynamixel/dynamixel_info.cpp
   src/dynamixel/dynamixel.cpp
 )
 
+set_target_properties(${PROJECT_NAME}_lib PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
+
 target_include_directories(
-  ${PROJECT_NAME}
+  ${PROJECT_NAME}_lib
   PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp>
   $<INSTALL_INTERFACE:include>
   ${dynamixel_sdk_INCLUDE_DIRS}
   ${hardware_interface_INCLUDE_DIRS}
@@ -50,7 +60,11 @@ target_include_directories(
   ${transmission_interface_INCLUDE_DIRS}
 )
 
-target_link_libraries(${PROJECT_NAME}
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
+add_dependencies(${PROJECT_NAME}_lib ${PROJECT_NAME})
+
+target_link_libraries(${PROJECT_NAME}_lib
   PUBLIC
   ${hardware_interface_TARGETS}
   pluginlib::pluginlib
@@ -61,6 +75,8 @@ target_link_libraries(${PROJECT_NAME}
   ${dynamixel_interfaces_TARGETS}
   ${realtime_tools_TARGETS}
   ${transmission_interface_TARGETS}
+  ${std_msgs_TARGETS}
+  ${cpp_typesupport_target}
 )
 
 pluginlib_export_plugin_description_file(hardware_interface dynamixel_hardware_interface_plugin.xml)
@@ -68,7 +84,7 @@ pluginlib_export_plugin_description_file(hardware_interface dynamixel_hardware_i
 ################################################################################
 # Install
 ################################################################################
-install(TARGETS ${PROJECT_NAME}
+install(TARGETS ${PROJECT_NAME}_lib
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -102,7 +118,7 @@ endif()
 # Macro for ament package
 ################################################################################
 ament_export_include_directories(include)
-ament_export_libraries(${PROJECT_NAME})
+ament_export_libraries(${PROJECT_NAME}_lib)
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rclcpp
@@ -112,6 +128,8 @@ ament_export_dependencies(
   dynamixel_sdk
   dynamixel_interfaces
   transmission_interface
+  std_msgs
+  rosidl_default_runtime
 )
 
 ament_package()
